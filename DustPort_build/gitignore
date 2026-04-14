@@ -1,0 +1,34 @@
+# Build artefacts
+*.obj
+*.dll
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.idb
+*.exe
+
+# MSVC
+*.vcxproj.user
+*.suo
+.vs/
+x64/
+Debug/
+Release/
+
+# Test outputs
+test/output/
+*.log
+*.tmp
+
+# AviSynth test scripts (user-specific)
+test/*.avs
+!test/README.md
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editor
+*.swp
+*~
