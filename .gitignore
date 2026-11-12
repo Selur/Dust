@@ -1,8 +1,20 @@
-# Build artefacts
+# Local notes for Claude, not part of the repository
+docs/
+CLAUDE.md
+
+# Build output
+build/
+builddir/
+wheelhouse/
+dist/
 *.obj
+*.o
 *.dll
+*.so
+*.dylib
 *.exp
 *.lib
+*.a
 *.pdb
 *.ilk
 *.idb
@@ -16,14 +28,18 @@ x64/
 Debug/
 Release/
 
+# Python
+__pycache__/
+*.pyc
+
 # Test outputs
+test/work/
 test/output/
 *.log
 *.tmp
 
 # AviSynth test scripts (user-specific)
 test/*.avs
-!test/README.md
 
 # OS
 Thumbs.db
@@ -32,3 +48,7 @@ Thumbs.db
 # Editor
 *.swp
 *~
+
+# Test data and packages
+*.y4m
+*.whl

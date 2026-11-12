@@ -59,6 +59,8 @@
 #   define PPC32
 #elif defined(__riscv)
 #   define RISCV
+#elif defined(__loongarch__)
+#   define LOONGARCH
 #elif defined(__sparc_v9__)
 #   define SPARC
 #elif defined(__mips__)
@@ -118,6 +120,18 @@
 #   define AVS_POSIX
 #else
 #   error Operating system unsupported.
+#endif
+
+#if defined(AVS_WINDOWS)
+#  if defined(X86_32) || defined(X86_64)
+#    define AVS_WINDOWS_X86
+#  elif defined(ARM64) || defined(ARM32)
+#    define AVS_WINDOWS_ARM
+#  endif
+#endif
+
+#if defined(MSVC) && !defined(AVS_WINDOWS_X86)
+#    error Unsupported combination of compiler, operating system, and machine architecture.
 #endif
 
 // useful warnings disabler macros for supported compilers

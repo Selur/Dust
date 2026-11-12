@@ -1,202 +1,276 @@
-# DustPort
+# Dust
 
-**A limit-clipping spatiotemporal denoiser for AviSynth+, in the philosophy of Steady's DustV5 (2003).**
+**A limit-clipping spatiotemporal denoiser in the philosophy of Steady's DustV5 (2003).** One plugin binary for
+**AviSynth+** and **VapourSynth** (API 4), built for Windows x64, Linux x86_64 and macOS arm64, with SSE4.1, AVX,
+AVX2 and NEON code paths that all give bit-identical results.
 
-DustPort reconstructs the four classic Dust modes (FaeryDust/PixieDust/GoldDust/SpaceDust) with modern extensions: larger temporal radius, median option, external motion compensation, edge-aware limit map, 10–16 bit planar YUV support, and per-plane processing.
+Every output sample stays within a fixed distance of the source sample: `out = clamp(filter, src ± limit)`. Dust
+cannot drift, invent detail or smear structure by more than `limit`, which makes it a safe denoiser for film
+restoration, scans and compressed sources.
 
-The defining property is **limit-clipping**: every output pixel is guaranteed to stay within a bounded distance from the source — `out = clamp(filter, src ± limit)`. This makes DustPort well-suited for film restoration where drift, hallucinated detail, and over-smoothing must be avoided.
+- DustV5 by Steady (2003): FaeryDust, PixieDust, GoldDust, SpaceDust; 32-bit, MMX, YUY2 only, source never published
+- DustPort 1.0.0 by Yuri Pronkin (2026): independent reimplementation for AviSynth+ (64 bit, planar YUV, 10-16 bit,
+  larger temporal radius, median, external motion compensation, edge-aware limits)
+- Dust 1.0.0: AviSynth+ and VapourSynth from one source, exact formulas, scene change handling, mirrored borders,
+  field mode for interlaced video, Y/Gray and YUVA, multithreading, SSE4.1/AVX/AVX2/NEON, Linux and macOS builds
+
+How it works, formula by formula: [ALGORITHM.md](ALGORITHM.md).
 
 ## Contents
 
 - [Installation](#installation)
 - [Quick start](#quick-start)
-- [Filter names and modes](#filter-names-and-modes)
+- [Functions and modes](#functions-and-modes)
 - [Parameters](#parameters)
+- [Formats](#formats)
+- [Wrapper: DustDenoise](#wrapper-dustdenoise)
 - [Usage examples](#usage-examples)
-- [Architecture and philosophy](#architecture-and-philosophy)
-- [Relation to the original DustV5](#relation-to-the-original-dustv5)
-- [Performance tips](#performance-tips)
+- [Performance](#performance)
+- [Differences to DustPort 1.0.0](#differences-to-dustport-100)
 - [Build from source](#build-from-source)
 - [Credits and license](#credits-and-license)
 
----
-
 ## Installation
 
-1. Download `DustPort.dll` from Releases.
-2. Put it in your AviSynth+ plugins64 directory (usually `C:\Program Files (x86)\AviSynth+\plugins64`).
-3. Optional: put `DustPort.avsi` in the same directory for convenience wrappers.
+Release files: `Dust-<version>-<platform>.zip` (plugin, `Dust.avsi`, `Dust.py`, docs) and a VapourSynth wheel.
 
-Requirements: AviSynth+ 3.4 or newer, 64-bit build, x86-64 CPU with SSE4.1 support.
+| | AviSynth+ | VapourSynth |
+|---|---|---|
+| Plugin | `Dust.dll` into the `plugins64` folder, or `LoadPlugin("Dust.dll")` | `pip install vapoursynth_dust-<version>-py3-none-<platform>.whl` (installs into `site-packages/vapoursynth/plugins`), or the plugin file into a plugin folder / `core.std.LoadPlugin()` |
+| File | `Dust.dll` (Windows) | `Dust.dll`, `libDust.so`, `libDust.dylib` |
+| Wrapper | `Dust.avsi` (needs MVTools2) | `Dust.py` on the Python path (needs MVTools, namespace `mv`) |
+| Needs | AviSynth+; `Dust.avsi` needs arrays and `ArrayAdd` (3.7.3+, tested with 3.7.6); frame properties from interface version 8 | API 4 (R55 or newer) |
+
+The best instruction set is chosen at runtime; any x86-64 CPU works (C fallback without SSE4.1).
 
 ## Quick start
 
-Simplest usage, spatial only, no motion compensation:
+AviSynth+:
 
 ```
-LoadPlugin("DustPort.dll")
+LoadPlugin("Dust.dll")
 src = LWLibavVideoSource("clip.mkv")
-src.SpaceDustPort(limit=6)
+src.SpaceDust(limit=6)                      # spatial only, no other frames
+src.PixieDust()                             # temporal + spatial, plain neighbour frames
 ```
 
-Full spatiotemporal with motion compensation (classic Pixie strength):
+With motion compensation (`Dust.avsi` builds the MVTools clips):
 
 ```
-LoadPlugin("DustPort.dll")
-src = LWLibavVideoSource("clip.mkv").ConvertBits(16)
-
-# Build MC clips with MVTools
-sup = src.MSuper(pel=2, sharp=2, hpad=16, vpad=16)
-bv1 = sup.MAnalyse(isb=true,  delta=1, blksize=8, overlap=4, search=5, truemotion=true)
-fv1 = sup.MAnalyse(isb=false, delta=1, blksize=8, overlap=4, search=5, truemotion=true)
-p1  = src.MCompensate(sup, bv1, thSAD=300)
-n1  = src.MCompensate(sup, fv1, thSAD=300)
-
-src.PixieDustPort(limit=5, prev=[p1], next=[n1])
+LoadPlugin("Dust.dll")
+LoadPlugin("mvtools2.dll")
+Import("Dust.avsi")
+LWLibavVideoSource("clip.mkv").ConvertBits(16).DustDenoise(tr=2, temporal=1)
 ```
 
-## Filter names and modes
+VapourSynth:
 
-Four filter names preserve the classic Dust naming. Each corresponds to an internal `mode` with a different default strength:
+```python
+import vapoursynth as vs
+core = vs.core
+clip = core.dust.PixieDust(clip, tr=2)
 
-| Filter name      | Mode | Default limit | Behaviour                               |
-|------------------|:----:|:-------------:|-----------------------------------------|
-| `FaeryDustPort`  |  0   |       2       | Temporal only (conservative)            |
-| `PixieDustPort`  |  1   |       5       | Temporal + spatial, balanced            |
-| `GoldDustPort`   |  2   |       8       | Temporal + spatial, spatial-dominant    |
-| `SpaceDustPort`  |  3   |       6       | Spatial only (fastest, no frames fetched) |
+from Dust import DustDenoise                 # Dust.py, motion compensated
+clip = DustDenoise(clip, limit=16, limit_edge=3, edge_thresh=24, tr=2, temporal=1, planes=[0])
+```
 
-All four share the same parameter set (except `SpaceDustPort` which omits temporal parameters).
+## Functions and modes
+
+The four names of DustV5 are one filter with different defaults:
+
+| AviSynth+ | VapourSynth | `mode` | `limit` | Behaviour |
+|---|---|:--:|:--:|---|
+| `FaeryDust` | `dust.FaeryDust` | 0 | 2 | temporal only (conservative) |
+| `PixieDust` | `dust.PixieDust` | 1 | 5 | temporal + spatial, temporal-weighted |
+| `GoldDust` | `dust.GoldDust` | 2 | 8 | temporal + spatial, spatial-weighted |
+| `SpaceDust` | `dust.SpaceDust` | 3 | 6 | spatial only (fastest, fetches no other frame) |
+
+`mode` overrides the default of the function. SpaceDust has no temporal parameters; with `mode < 3` it uses `tr=1`
+without motion compensation.
 
 ## Parameters
 
-### Common parameters
+All levels (`limit`, `limit_edge`, `edge_thresh`, `scthresh`) are on the 8-bit scale at every bit depth.
 
-| Parameter     | Type    | Default | Description                                                         |
-|---------------|---------|:-------:|---------------------------------------------------------------------|
-| `limit`       | int     | varies  | Maximum per-pixel deviation from source. Range: 1..64 (8-bit scale, auto-scaled internally for 16-bit clips) |
-| `mode`        | int     | varies  | Override the default mode (0..3). Normally not needed              |
-| `limit_edge`  | int     |   -1    | If >=0, enables edge-aware limit map. Limit on edge pixels         |
-| `edge_thresh` | int     |   32    | Sobel gradient magnitude threshold above which a pixel is an edge   |
-| `planes`      | string  | "yuv"   | Which planes to process. Any of `y`, `u`, `v`, `yu`, `yv`, `uv`, `yuv` |
+| Parameter | Type | Default | Range | Meaning |
+|---|---|:--:|---|---|
+| `limit` | int | per function | 1..64 | maximum change of a sample |
+| `mode` | int | per function | 0..3 | see above |
+| `limit_edge` | int | -1 | -1, 0..`limit` | limit on edges; -1 = edge-aware limit off |
+| `edge_thresh` | int | 32 | 1..255 | Sobel magnitude counted as a full edge (a sharp step of height h gives 4h) |
+| `planes` | AviSynth+: string, VapourSynth: int list | all | `"y"`, `"uv"`, … / `[0]`, `[1, 2]`, … | planes to process, the others are copied |
+| `scthresh` | int | 20 | -1, 0, 1..255 | scene change threshold (mean absolute luma difference); 0 = only frame properties, -1 = no scene change handling |
+| `interlaced` | AviSynth+: bool, VapourSynth: int | from `_FieldBased` | | field mode: spatial neighbours from the same field |
+| `opt` | int | -1 | -1..4 | instruction set: -1 best, 0 C, 1 SSE4.1, 2 AVX, 3 AVX2, 4 NEON; error if not available |
 
-### Temporal parameters (Faery/Pixie/Gold only, not Space)
+Temporal parameters (FaeryDust, PixieDust, GoldDust):
 
-| Parameter   | Type                | Default | Description                                              |
-|-------------|---------------------|:-------:|----------------------------------------------------------|
-| `tr`        | int                 |    1    | Temporal radius. Window size = 2×tr+1 frames. Range: 1..5 |
-| `temporal`  | int                 |    0    | 0 = mean, 1 = median                                     |
-| `prev`      | array of clips      |   nil   | Motion-compensated previous frames. Size must equal `tr` |
-| `next`      | array of clips      |   nil   | Motion-compensated next frames. Size must equal `tr`     |
+| Parameter | Type | Default | Range | Meaning |
+|---|---|:--:|---|---|
+| `tr` | int | 1 | 1..5 | temporal radius, window of `2*tr+1` frames |
+| `temporal` | int | 0 | 0, 1 | 0 = mean, 1 = median |
+| `prev` | clip array | none | `tr` clips | `prev[k-1]` = frame `n-k` motion compensated onto `n` (MVTools `isb=false`, `delta=k`) |
+| `next` | clip array | none | `tr` clips | `next[k-1]` = frame `n+k` motion compensated onto `n` (MVTools `isb=true`, `delta=k`) |
 
-If `prev`/`next` are omitted, the plugin uses un-compensated `clip[n±k]` with boundary clamping. This is usually worse than external MC but requires no MVTools setup.
+Without `prev`/`next` the plain neighbour frames are used. The motion compensated clips must have the format and
+size of the input and at least as many frames.
+
+**Scene changes:** a window position behind a cut (or beyond the clip end) is replaced by the nearest frame of the
+same scene, so frames of different scenes are never averaged. Cuts come from `_SceneChangePrev` /
+`_SceneChangeNext` (e.g. VapourSynth `misc.SCDetect`, `mv.SCDetection`) and from the built-in detector
+(`scthresh`).
+
+**Borders** are mirrored, so every sample, including the first and last row and column, gets the same filter.
+
+**Interlaced video:** with `interlaced=true` (or `_FieldBased` = 1/2 when `interlaced` is not given) the spatial
+blend and the edge detector work per field; the temporal part already combines the same field of the neighbour
+frames. Motion compensated clips for interlaced video must be made per field (`DustDenoise(interlaced=true)` does
+this).
+
+## Formats
+
+| | AviSynth+ | VapourSynth |
+|---|---|---|
+| Supported | Y, planar YUV and YUVA (alpha copied), 8-16 bit; YUY2 | Gray, YUV, 8-16 bit integer |
+| Not supported | RGB, 32 bit float | RGB, float |
+
+YUY2 gives exactly the result of the same clip as planar 4:2:2. Frame properties are kept. Thread-safe and
+independent of request order (AviSynth+ `MT_NICE_FILTER`, VapourSynth `fmParallel`). Float support is planned for
+1.1.0.
+
+## Wrapper: DustDenoise
+
+`Dust.avsi` (AviSynth+, MVTools2 by pinterf) and `Dust.py` (VapourSynth, MVTools `core.mv`) build the motion
+compensated clips and call the filter:
+
+```
+DustDenoise(clip, mode="pixie", limit, limit_edge=-1, edge_thresh=32, tr=1, temporal=0, planes, scthresh=20,
+            interlaced=false, mc=true, thSAD=300, blksize=8, overlap=4, search=4, pel=2, truemotion=true, opt=-1)
+```
+
+- `mode`: `"faery"`, `"pixie"`, `"gold"` or `"space"` (no motion compensation); `limit` defaults per mode.
+- `mc=false`: no motion compensation, the filter uses the plain neighbour frames.
+- `interlaced=true`: field mode; motion compensation per field (`SeparateFields`, `delta = 2k`, `Weave`). Set the
+  field order first (AviSynth+ `AssumeTFF()` / `AssumeBFF()`, VapourSynth `_FieldBased`).
+- MVTools settings: `thSAD` (`thsad` in Python), `blksize`, `overlap`, `search`, `pel`, `truemotion`; chroma is
+  used for the motion search when `planes` includes U or V.
+- `planes`: string in AviSynth+, list of indices in Python.
+
+The wrapper rebuilds the motion vectors on every call; for several calls on the same clip build `prev`/`next` once
+and call the filter directly.
 
 ## Usage examples
 
-### Edge-aware, aggressive on flat areas
+Edge-aware: strong on flat areas, gentle on contours:
 
 ```
-src.PixieDustPort( \
-    limit=16, limit_edge=3, edge_thresh=24, \
-    tr=1, temporal=0, prev=[p1], next=[n1])
+src.PixieDust(limit=16, limit_edge=3, edge_thresh=24, prev=[p1], next=[n1])
 ```
 
-`limit=16` gives strong denoising on flat areas, `limit_edge=3` protects contours, `edge_thresh=24` defines where "edge" starts.
-
-### Temporal radius = 2 with median
+Median over five motion compensated frames (rejects dust specks and dead pixels):
 
 ```
-src.PixieDustPort( \
-    limit=8, tr=2, temporal=1, \
-    prev=[p1,p2], next=[n1,n2])
+src.PixieDust(limit=8, tr=2, temporal=1, prev=[p1, p2], next=[n1, n2])
 ```
 
-Median over a 5-frame window (prev-2, prev-1, cur, next-1, next-2). Better at rejecting temporal outliers than mean.
-
-### Luma only (fastest useful configuration)
+Luma only:
 
 ```
-src.SpaceDustPort(limit=6, planes="y")
+src.SpaceDust(limit=6, planes="y")
 ```
 
-Spatial-only on luma, chroma passes through. Useful when chroma is clean and Y has shot noise.
-
-### Multiple passes
-
-```
-src.PixieDustPort(limit=4, tr=1, prev=[p1], next=[n1]).\
-    PixieDustPort(limit=4, tr=1, prev=[p1], next=[n1])
+```python
+core.dust.SpaceDust(clip, limit=6, planes=[0])
 ```
 
-Two gentle passes often give better character than one aggressive pass (classic Fizick advice, works here too).
+Two gentle passes often look better than one strong pass:
 
-## Architecture and philosophy
+```
+src.PixieDust(limit=4, prev=[p1], next=[n1]).PixieDust(limit=4, prev=[p1], next=[n1])
+```
 
-**What makes DustPort different from modern denoisers (BM3D, KNLMeansCL, DFTTest):**
+Better scene detection than the built-in one (VapourSynth):
 
-- **Bounded output.** Every pixel is guaranteed within `src ± limit`. No drift. No hallucinated detail. What goes out is always "close to" what went in, by a measurable amount.
-- **Honest MC.** The plugin does no motion estimation itself. External motion-compensated clips are supplied by the user via `prev`/`next` arrays. This is visible, tunable, reproducible. MVTools is the usual source.
-- **Simple kernels.** Temporal mean or median over an MC window. Spatial 3×3 weighted blend. Edge-aware per-pixel limit. Each component does one thing that can be reasoned about.
-- **No quality-restoration claim.** DustPort cleans noise. It does not sharpen, enhance, invent detail, or de-ring edges. Those are separate problems with separate tools.
+```python
+clip = core.misc.SCDetect(clip, threshold=0.1)
+clip = core.dust.PixieDust(clip, tr=3, scthresh=0)
+```
 
-**The trade-off.** Modern denoisers often produce cleaner-looking output on clean sources. But on restoration material with compression artifacts, dead pixels, or scan noise, they can produce plausible-but-wrong output that is indistinguishable from real detail in the target frame. Limit-clipping architectures cannot do this — by construction.
+## Performance
 
-## Relation to the original DustV5
+1920x1080 4:2:0, one thread, frames per second (VapourSynth R82, synthetic noise, AMD Ryzen 9 7950X):
 
-Original `DustV5.dll` by Steady (2003) was a 57 KB 32-bit MMX filter for AviSynth 2.0.x, handling YUY2 only. The source code was never published.
+| Call | C | SSE4.1 | AVX | AVX2 |
+|---|---:|---:|---:|---:|
+| 8 bit `PixieDust()` | 46 | 706 | 765 | 1259 |
+| 8 bit `PixieDust(tr=2, temporal=1)` | 13 | 337 | 341 | 527 |
+| 8 bit `FaeryDust(tr=5, temporal=1)` | 5 | 123 | 120 | 187 |
+| 8 bit `SpaceDust()` | 86 | 1301 | 1383 | 2274 |
+| 8 bit `PixieDust(limit=16, limit_edge=3, edge_thresh=24)` | 27 | 356 | 376 | 589 |
+| 16 bit `PixieDust()` | 39 | 329 | 328 | 452 |
+| 16 bit `GoldDust(tr=3)` | 38 | 201 | 199 | 271 |
+| 16 bit `SpaceDust()` | 79 | 773 | 755 | 663 |
 
-DustPort is an **independent reimplementation** based on:
-- Reverse-engineering of the 2003 binary via `pefile` + `capstone` (mode dispatch, limit defaults, class structure — 12 specialized MMX kernels)
-- The public ReadMe by Steady
-- Published forum discussion on doom9 (thread ID 80834 and surrounding)
+Tips, by effect: `planes="y"` / `planes=[0]` if only luma is noisy; SpaceDust if no temporal filtering is needed;
+mean and small `tr` are cheaper than median and large `tr`; the edge-aware limit costs one Sobel pass per plane; with
+motion compensation, MVTools usually takes more time than Dust (larger `blksize`, `search=4`, lower `pel` are
+faster). Measure with `test/bench.py`.
 
-Confirmed findings:
-- Faery/Pixie/Gold/Space are one class with a mode selector (0/1/2/3), not four separate filters
-- The undocumented `mode` parameter in the original signature overrides the default per filter name
-- SpaceDust (mode=3) is spatial-only; the other three share a spatiotemporal path with `tr=1`
-- Limit defaults: Faery=2, Pixie=5, Gold=8, Space=6
+## Differences to DustPort 1.0.0
 
-DustPort **adds**:
-- `tr` up to 5, `temporal` (mean/median) choice
-- External motion compensation via `prev`/`next` arrays
-- Edge-aware per-pixel limit map (Sobel-based)
-- Planar YUV support (YV12/YV16/YV24), bit depths 8–16
-- Per-plane processing (`planes` parameter)
-- SSE2/SSE4.1 implementation (MMX retired)
+The output is **not** identical to DustPort 1.0.0; Dust computes the formulas that DustPort documented, everywhere:
 
-DustPort is **not bit-exact** with the original. It reproduces the same philosophy.
+- Names: `FaeryDust` / `PixieDust` / `GoldDust` / `SpaceDust` (the DustV5 names) instead of `…DustPort`; the
+  wrapper file is `Dust.avsi`.
+- DustPort's SIMD and scalar paths computed different formulas, so a result depended on the column (the first and
+  the last 1-15 columns of each row differed). Dust uses `(4c + up + down + left + right + 4) >> 3` for the
+  spatial blend and `(2t + s + 1) / 3`, `(t + 2s + 1) / 3` for PixieDust / GoldDust everywhere.
+- DustPort's temporal mean rounded down too far (three equal frames of value 100 gave 99), so static areas got
+  darker by one code value per pass; Dust rounds to nearest.
+- DustPort's median for 9 and 11 frames (`tr=4`, `tr=5`) was not a median; Dust uses verified networks.
+- The edge-aware limit was rounded differently per column; Dust rounds to nearest everywhere.
+- New: scene change handling (`scthresh`, frame properties), mirrored borders (DustPort copied the first and last row
+  and column in SpaceDust and used only the temporal part there in the other modes), field mode, Y/Gray and
+  YUVA, edge-aware and `planes` for YUY2, VapourSynth, `opt`.
+- DustPort was built for AVX2 as a whole (illegal instruction on older CPUs) and ran single-threaded
+  (`MT_SERIALIZED`) and dropped frame properties; Dust selects the instruction set at runtime, runs multithreaded
+  and keeps the properties.
+- `DustPort.avsi` took `prev` from the `isb=true` vectors and `next` from `isb=false` (swapped; no effect on mean and
+  median, but wrong); `Dust.avsi` uses the right ones.
 
-## Performance tips
-
-Ordered by usefulness:
-
-1. **`planes="y"`** — if your noise is in luma only, skip chroma processing. Typically 1.4–2.5× speedup depending on subsampling.
-2. **`SpaceDustPort`** — if you don't need temporal filtering, use spatial-only. Fetches only one frame per output, no MC setup required.
-3. **`tr=1, temporal=0`** — the default. `tr=2+` and `temporal=1` cost more.
-4. **Disable edge-aware** (`limit_edge=-1`, the default) when not needed. Saves one Sobel pass per plane.
-5. **MVTools setup matters more than DustPort settings.** MC usually dominates runtime. Consider lower `pel`, larger `blksize`, `search=4` (hexagon) instead of 5 (exhaustive).
+`test/compare_original.py` reports the differences per setting: FaeryDust with median is identical, FaeryDust with
+mean differs by at most 1, all other settings stay within `2 * limit` of DustPort's output.
 
 ## Build from source
 
-Requires MSVC (not MinGW — AviSynth+ has vtable layout incompatibility with GCC).
+Meson and a C++17 compiler (MSVC, GCC or Clang):
 
 ```
-cl /LD /EHsc /O2 /arch:AVX2 ^
-   /I "C:\Program Files (x86)\AviSynth+\FilterSDK\include" ^
-   DustPort.cpp /link /OUT:DustPort.dll
+meson setup build            # Windows: meson setup build --vsenv -Db_vscrt=mt   (or run build.bat)
+meson compile -C build
+meson test -C build          # every SIMD tier against the C reference
 ```
 
-`/arch:AVX2` is required — it enables SSE4.1 intrinsics used for 16-bit min/max operations.
+Wheel: `pip wheel .` (Windows: add `--config-settings=setup-args=--vsenv --config-settings=setup-args=-Db_vscrt=mt`).
 
-A `build.bat` is provided for convenience.
+Tests in `test/` (Python with numpy):
+
+| Script | Checks |
+|---|---|
+| `test_dust.py [plugin]` | VapourSynth: bit for bit against the numpy model `model.py` (written from ALGORITHM.md), every case for every instruction set, errors |
+| `test_avs.py` | AviSynth+ (Windows, `avs2yuv64`, BestSource): the same cases, plus YUY2 and YUVA |
+| `kernel_test.cpp` | `meson test`: every SIMD tier against C on random data |
+| `compare_hosts.py` | AviSynth+ and VapourSynth byte-identical on real clips |
+| `test_wrappers.py` | `Dust.avsi` and `Dust.py` on a real clip |
+| `compare_original.py` | differences to the DustPort 1.0.0 DLL |
+| `bench.py` | speed per instruction set |
 
 ## Credits and license
 
-Original DustV5 © 2003 by Steady. DustPort is an independent implementation.
+- DustV5 © 2003 Steady: the original filter and its four modes.
+- DustPort © 2026 Yuri Pronkin: the reimplementation this port is based on (reverse-engineered with `pefile` and
+  `capstone`, see the doom9 thread 80834 and the DustV5 ReadMe).
+- Dust © 2026 Selur: AviSynth+ / VapourSynth port.
 
-DustPort © 2026 Yuri Pronkin.
-Released under the MIT License. See `LICENSE`.
-
-Reverse-engineering made possible by the `pefile` and `capstone` projects.
-
-Feedback and patches welcome via GitHub issues or the doom9 thread.
+Released under the MIT License, see [LICENSE](LICENSE). The vendored VapourSynth headers in `include/vapoursynth`
+are LGPL-2.1, see the license file there.
