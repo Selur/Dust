@@ -2,7 +2,9 @@
 
 **A limit-clipping spatiotemporal denoiser in the philosophy of Steady's DustV5 (2003).** One plugin binary for
 **AviSynth+** and **VapourSynth** (API 4), built for Windows x64, Linux x86_64 and macOS arm64, with SSE4.1, AVX,
-AVX2 and NEON code paths that all give bit-identical results.
+AVX2 and NEON code paths. All of them give exactly the same output as the plain C code, so the result does not
+depend on the CPU. The output differs from DustPort 1.0.0 (see
+[Differences to DustPort 1.0.0](#differences-to-dustport-100)).
 
 Every output sample stays within a fixed distance of the source sample: `out = clamp(filter, src ± limit)`. Dust
 cannot drift, invent detail or smear structure by more than `limit`, which makes it a safe denoiser for film
